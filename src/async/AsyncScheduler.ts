@@ -19,6 +19,7 @@ export interface Task {
   fn: () => Promise<any>;
   options: Required<AddTaskOptions>;
   attempt: number;
+  controller: AbortController;
 }
 
 export type EventType = "start" | "success" | "error" | "retry" | "finish";
@@ -38,7 +39,8 @@ export class AsyncScheduler {
 
   private _events: Map<EventType, Function[]> = new Map();
 
-  private _pause = false;
+  // 标志位
+  private _paused = false;
   private _started: any;
 
   constructor(options?: AsyncSchedulerOptions) {
@@ -50,10 +52,12 @@ export class AsyncScheduler {
 
   public addTask(fn: () => Promise<any>, options?: AddTaskOptions): string {
     const id = uuidv4();
+    const controller = new AbortController();
     const task: Task = {
       id,
       fn,
       attempt: 0,
+      controller,
       options: {
         priority: options?.priority ?? 0,
         retry: options?.retry ?? 0,
@@ -85,14 +89,17 @@ export class AsyncScheduler {
   }
 
   private async _runNext() {
-    if (this._pause) return;
+    if (this._paused) return;
     if (this._running >= this._concurrency) return;
-    if (this._taskQuene.length === 0) {
-      if (this._running === 0) this._emit("finish");
+    const task = this._taskQuene.shift();
+
+    if (!task) {
+      if (this._running === 0) {
+        this._emit("finish");
+      }
       return;
     }
 
-    const task = this._taskQuene.shift()!;
     this._running++;
     this._emit("start", task.id);
 
@@ -100,7 +107,7 @@ export class AsyncScheduler {
       const result = await this._executeTask(task);
       this._emit("success", task.id, result);
     } catch (err) {
-      if (task.attempt < task.options.retry || this._retry) {
+      if (task.attempt < this._retry || task.options.retry) {
         task.attempt++;
         this._emit("retry", task.id, task.attempt, err);
         this._taskQuene.unshift(task); // 重试放回队列
@@ -134,10 +141,42 @@ export class AsyncScheduler {
     return fn();
   }
 
+  // 停止取新任务，但不终止已运行任务
   public pause() {
-    this._pause = true;
+    this._paused = true;
   }
 
+  // 继续调度队列
+  public resume() {
+    if (!this._paused) return;
+    this._paused = false;
+
+    const slots = this._concurrency - this._running;
+    for (let i = 0; i < slots; i++) {
+      this._runNext();
+    }
+  }
+
+  // 取消指定任务
+  public cancelTask(id: string) {
+    const task = this._tasks.get(id);
+    if (!task) return;
+
+    // 从队列删除
+    const index = this._taskQuene.indexOf(task);
+    if (index > -1) {
+      this._taskQuene.splice(index, 1);
+      this._tasks.delete(id);
+      return;
+    }
+
+    // 如果正在运行，使用 controller 取消
+    task.controller.abort();
+  }
+
+  public abortAll() {}
+
+  // 注册生命周期事件
   public on(event: EventType, callback: Function) {
     if (!this._events.has(event)) this._events.set(event, []);
     this._events.get(event)!.push(callback);
