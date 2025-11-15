@@ -16,7 +16,7 @@ export interface AddTaskOptions {
 
 export interface Task {
   id: string;
-  fn: () => Promise<any>;
+  fn: (signal?: AbortSignal) => Promise<any>;
   options: Required<AddTaskOptions>;
   attempt: number;
   controller: AbortController;
@@ -43,6 +43,9 @@ export class AsyncScheduler {
   private _paused = false;
   private _started: any;
 
+  // 全局异步控制器
+  private _globalAbortController = new AbortController();
+
   constructor(options?: AsyncSchedulerOptions) {
     this._concurrency = options?.concurrency ?? 5;
     this._retry = options?.retry ?? 0;
@@ -50,9 +53,19 @@ export class AsyncScheduler {
     this._autoStart = options?.autoStart ?? false;
   }
 
-  public addTask(fn: () => Promise<any>, options?: AddTaskOptions): string {
+  public addTask(
+    fn: (signal?: AbortSignal) => Promise<any>,
+    options?: AddTaskOptions
+  ): string {
     const id = uuidv4();
     const controller = new AbortController();
+
+    // 将任务自己的 signal、全局 signal 和外部传入的 signal 合并
+    const signals = [controller.signal, this._globalAbortController.signal];
+    if (options?.signal) {
+      signals.push(options.signal);
+    }
+
     const task: Task = {
       id,
       fn,
@@ -62,7 +75,8 @@ export class AsyncScheduler {
         priority: options?.priority ?? 0,
         retry: options?.retry ?? 0,
         timeout: options?.timeout ?? this._timeout,
-        signal: options?.signal ?? new AbortController().signal,
+        // 使用 AbortSignal.any() 来监听任何一个取消信号
+        signal: AbortSignal.any(signals),
       },
     };
 
@@ -107,7 +121,9 @@ export class AsyncScheduler {
       const result = await this._executeTask(task);
       this._emit("success", task.id, result);
     } catch (err) {
-      if (task.attempt < this._retry || task.options.retry) {
+      const maxRetries =
+        task.options.retry > 0 ? task.options.retry : this._retry;
+      if (task.attempt < maxRetries) {
         task.attempt++;
         this._emit("retry", task.id, task.attempt, err);
         this._taskQuene.unshift(task); // 重试放回队列
@@ -128,17 +144,29 @@ export class AsyncScheduler {
       return Promise.reject(new Error("Task Cancelled"));
     }
 
-    let timeoutPromise: Promise<any> | null = null;
+    const taskPromise = fn(signal);
+
+    // abort 监听
+    const abortPromise = new Promise((_, reject) =>
+      signal.addEventListener("abort", () =>
+        reject(new Error("Task Cancelled"))
+      )
+    );
+
+    const raceList = [taskPromise, abortPromise];
+
+    // 超时监听
     if (timeout > 0) {
-      timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Timeout")), timeout)
-      );
-      // 如果有超时设置，使用 Promise.race
-      return Promise.race([fn(), timeoutPromise]);
+      const timeoutPromise = new Promise((_, reject) => {
+        const timer = setTimeout(() => reject(new Error("Timeout")), timeout);
+        taskPromise.finally(() => clearTimeout(timer));
+        signal.addEventListener("abort", () => clearTimeout(timer));
+      });
+
+      raceList.push(timeoutPromise);
     }
 
-    // 没有超时设置，直接返回
-    return fn();
+    return Promise.race(raceList);
   }
 
   // 停止取新任务，但不终止已运行任务
@@ -174,7 +202,20 @@ export class AsyncScheduler {
     task.controller.abort();
   }
 
-  public abortAll() {}
+  public abortAll() {
+    if (!this._started) return;
+
+    this._paused = true;
+    this._taskQuene = [];
+
+    this._globalAbortController.abort();
+
+    // 重置内部状态，让调度器可以被重新使用
+    this._tasks.clear();
+    this._running = 0;
+    this._started = false;
+    this._globalAbortController = new AbortController();
+  }
 
   // 注册生命周期事件
   public on(event: EventType, callback: Function) {
