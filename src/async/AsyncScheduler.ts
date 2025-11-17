@@ -42,9 +42,14 @@ export class AsyncScheduler {
   // 标志位
   private _paused = false;
   private _started: any;
+  private _completed = false;
+  private _onFinishPromise: Promise<any[]> | null = null;
 
   // 全局异步控制器
   private _globalAbortController = new AbortController();
+
+  // 所有异步函数结果
+  public asyncResults: any[] = [];
 
   constructor(options?: AsyncSchedulerOptions) {
     this._concurrency = options?.concurrency ?? 5;
@@ -91,15 +96,31 @@ export class AsyncScheduler {
     return id;
   }
 
-  public start() {
-    // 防止重复启动
-    if (this._started) return;
+  public start(): Promise<any[]> {
+    // 如果已经执行过并且完成，直接返回结果
+    if (this._completed) {
+      return Promise.resolve(this.asyncResults);
+    }
+
+    // 如果已经执行过但未完成，返回同一个 Promise 等待
+    if (this._started) {
+      return this._onFinishPromise!;
+    }
+
     this._started = true;
 
-    // 启动最多 this._concurrency 个任务并发执行
-    for (let i = 0; i < this._concurrency; i++) {
-      this._runNext();
-    }
+    this._onFinishPromise = new Promise((resolve) => {
+      this.on("finish", () => {
+        this._completed = true;
+        resolve(this.asyncResults);
+      });
+
+      for (let i = 0; i < this._concurrency; i++) {
+        this._runNext();
+      }
+    });
+
+    return this._onFinishPromise;
   }
 
   private async _runNext() {
@@ -119,6 +140,7 @@ export class AsyncScheduler {
 
     try {
       const result = await this._executeTask(task);
+      this.asyncResults.push(result);
       this._emit("success", task.id, result);
     } catch (err) {
       const maxRetries =
@@ -146,7 +168,7 @@ export class AsyncScheduler {
 
     const taskPromise = fn(signal);
 
-    // abort 监听
+    // abort 监听，监听手动取消
     const abortPromise = new Promise((_, reject) =>
       signal.addEventListener("abort", () =>
         reject(new Error("Task Cancelled"))
@@ -159,6 +181,7 @@ export class AsyncScheduler {
     if (timeout > 0) {
       const timeoutPromise = new Promise((_, reject) => {
         const timer = setTimeout(() => reject(new Error("Timeout")), timeout);
+        // 无论任务结束还是取消，都清掉定时器
         taskPromise.finally(() => clearTimeout(timer));
         signal.addEventListener("abort", () => clearTimeout(timer));
       });
