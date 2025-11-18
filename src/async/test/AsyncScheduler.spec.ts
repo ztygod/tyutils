@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { AsyncScheduler } from "../AsyncScheduler";
+import { AsyncScheduler } from "../src/AsyncScheduler";
 
 function delay(ms: number, value?: any) {
   return new Promise((resolve) => setTimeout(() => resolve(value), ms));

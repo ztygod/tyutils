@@ -42,7 +42,7 @@ async function fetchUser(id: number) {
 
 // 添加任务
 for (let i = 1; i <= 10; i++) {
-  scheduler.add(() => fetchUser(i), { priority: i % 2 === 0 ? 1 : 2 });
+  scheduler.addTask(() => fetchUser(i), { priority: i % 2 === 0 ? 1 : 2 });
 }
 
 // 监听事件

@@ -12,6 +12,7 @@ export interface AddTaskOptions {
   retry?: number; // 此任务的重试次数（可覆盖全局）
   timeout?: number; // 此任务的超时（可覆盖全局）
   signal?: AbortSignal; // 可取消任务
+  dependsOn?: Task[] | []; // 依赖任务
 }
 
 export interface Task {
@@ -61,7 +62,7 @@ export class AsyncScheduler {
   public addTask(
     fn: (signal?: AbortSignal) => Promise<any>,
     options?: AddTaskOptions
-  ): string {
+  ): Task {
     const id = uuidv4();
     const controller = new AbortController();
 
@@ -82,6 +83,7 @@ export class AsyncScheduler {
         timeout: options?.timeout ?? this._timeout,
         // 使用 AbortSignal.any() 来监听任何一个取消信号
         signal: AbortSignal.any(signals),
+        dependsOn: options?.dependsOn ?? [],
       },
     };
 
@@ -93,7 +95,7 @@ export class AsyncScheduler {
       this._runNext();
     }
 
-    return id;
+    return task;
   }
 
   public start(): Promise<any[]> {

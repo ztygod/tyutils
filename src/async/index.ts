@@ -1,6 +1,6 @@
-export { AsyncScheduler } from "./AsyncScheduler";
+export { AsyncScheduler } from "./src/AsyncScheduler";
 export type {
   AsyncSchedulerOptions,
   AddTaskOptions,
   Task,
-} from "./AsyncScheduler";
+} from "./src/AsyncScheduler";
