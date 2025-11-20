@@ -17,6 +17,7 @@
     "vitest": "^4.0.8"
   },
   "dependencies": {
+    "@types/node": "^24.10.1",
     "uuid": "^13.0.0"
   }
 }
