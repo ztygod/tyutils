@@ -9,8 +9,9 @@ export class BigUploader {
   private _retry: number;
   private _timeout: number;
   private _header: Record<string, string>;
-  private _autoStart: boolean;
-  private _metadata: Record<string, any>;
+
+  // 文件唯一标识
+  private _fileId: string = "";
 
   // 用户自定义的计算 hash 的函数
   private _computeHash: ((file: File | Blob) => Promise<string>) | null;
@@ -37,13 +38,12 @@ export class BigUploader {
     this._retry = retry;
     this._timeout = timeout;
     this._header = header;
-    this._autoStart = autoStart;
     this._computeHash = computeHash;
-    this._metadata = metadata;
   }
 
   public async upload(file: File | Blob, metadata: Record<string, any>) {
     const fileId = await this._computeFileId(file); // 计算文件唯一 Hash 值，用于断点续传
+    this._fileId = fileId;
 
     const chunks = this._createChunks(file); // 文件分片
     const uploadedChunks = await this._getUploadedChunks(fileId); // 获取已上传的分片索引
@@ -127,7 +127,6 @@ export class BigUploader {
     return chunks;
   }
 
-  // 查询已上传的文件分片
   private async _getUploadedChunks(fileId: string): Promise<Set<number>> {
     const url = `${this._endpoint}/status?fileId=${encodeURIComponent(fileId)}`;
 
@@ -136,14 +135,10 @@ export class BigUploader {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), this._timeout);
 
-        const res = await this.requester.request<UploadedChunks>(url, {
-          method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-            ...this._header,
-          },
-          signal: controller.signal,
-        });
+        const res = await this.requester.get<UploadedChunks>(
+          url,
+          controller.signal
+        );
 
         clearTimeout(timeout);
 
@@ -156,74 +151,68 @@ export class BigUploader {
         console.warn(`[getUploadedChunks] attempt ${attempt + 1} failed:`, err);
 
         if (attempt === this._retry - 1) {
-          // 放弃断点续传，重新上传
-          return new Set();
+          return new Set(); // 放弃断点续传，重新上传
         }
       }
     }
+
     return new Set();
   }
 
-  // 并发上传文件分片
   private async _uploadChunksConcurrently(chunks: Chunk[]): Promise<void> {
     const url = `${this._endpoint}/upload`;
-
-    let running = 0;
+    const total = chunks.length;
     let completed = 0;
+    let failed = false;
 
-    return new Promise((resolve, reject) => {
-      const tryUpload = async () => {
-        if (completed === chunks.length) {
-          if (running === 0) resolve(); // 全部完成
+    const uploadChunk = async (chunk: Chunk) => {
+      for (let attempt = 0; attempt < this._retry; attempt++) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), this._timeout);
+
+        try {
+          await this.requester.uploadChunk(
+            `${url}?fileId=${this._fileId}&index=${chunk.index}`,
+            chunk.blob,
+            this._header,
+            controller.signal
+          );
+
+          completed++;
           return;
-        }
-
-        if (running >= this._concurrency) return;
-
-        const chunk = chunks.shift();
-        if (!chunk) return;
-
-        running++;
-
-        for (let attempt = 0; attempt < this._retry; attempt++) {
-          try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), this._timeout);
-
-            await this.requester.uploadChunk(url, chunk.blob, {
-              method: "POST",
-              headers: {
-                ...this._header,
-              },
-              signal: controller.signal,
-            });
-
-            clearTimeout(timeout);
-            completed++;
-            running--;
-
-            tryUpload(); // 继续调度
-            return;
-          } catch (err) {
-            if (attempt + 1 === this._retry) {
-              reject(new Error(`Chunk ${chunk.index} failed over retry`));
-              return;
-            }
+        } catch (error) {
+          if (attempt + 1 === this._retry) {
+            failed = true;
+            throw new Error(
+              `Chunk ${chunk.index} failed after ${attempt} attempts.`
+            );
           }
+        } finally {
+          clearTimeout(timeout);
         }
-      };
-
-      // 启动并发管控
-      for (let i = 0; i < this._concurrency; i++) {
-        tryUpload();
       }
-    });
+    };
+
+    const pool: Promise<void>[] = [];
+    let idx = 0;
+
+    const runNext = async () => {
+      if (failed || idx > this._concurrency) return;
+      const task = uploadChunk(chunks[idx++]).then(runNext);
+      pool.push(task);
+    };
+
+    const size = Math.min(this._concurrency, total);
+    for (let i = 0; i < size; i++) runNext();
+    await Promise.all(pool);
   }
 
-  // 通知后端进行合并
   private async _mergeChunks(
     fileId: string,
     chunkLength: number,
     metadata: Record<string, any>
-  ) {}
+  ) {
+    const url = `${this._endpoint}/merge`;
+    return this.requester.post(url, { fileId, chunkLength, metadata });
+  }
 }

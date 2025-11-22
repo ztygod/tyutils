@@ -1,34 +1,41 @@
-import type { Requester, UploadRequestInit } from "../../common/type";
+import type { Requester } from "../../common/type";
 
 export class BrowserRequester implements Requester {
-  async request<T = any>(url: string, config?: UploadRequestInit): Promise<T> {
+  async get<T = any>(url: string, signal?: AbortSignal): Promise<T> {
+    const res = await fetch(url, { signal });
+    return res.json();
+  }
+  async post<T = any>(
+    url: string,
+    data: any,
+    headers?: Record<string, string>,
+    signal?: AbortSignal
+  ): Promise<T> {
     const res = await fetch(url, {
-      method: config?.method || "GET",
-      headers: config?.headers,
-      body: config?.body,
-      signal: config?.signal,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...headers,
+      },
+      body: JSON.stringify(data),
+      signal,
     });
 
-    if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
-    return res.json() as Promise<T>;
+    return res.json();
   }
-
   async uploadChunk<T = any>(
     url: string,
     chunk: Blob,
-    config?: UploadRequestInit
+    headers?: Record<string, string>,
+    signal?: AbortSignal
   ): Promise<T> {
-    const formData = new FormData();
-    formData.append("chunk", chunk);
-
     const res = await fetch(url, {
-      method: config?.method || "POST",
-      headers: config?.headers,
-      body: formData,
-      signal: config?.signal,
+      method: "POST",
+      headers,
+      signal,
+      body: chunk,
     });
 
-    if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
-    return res.json() as Promise<T>;
+    return res.json();
   }
 }

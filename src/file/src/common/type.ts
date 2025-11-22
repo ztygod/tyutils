@@ -1,17 +1,16 @@
-export interface UploadRequestInit {
-  method?: "GET" | "POST";
-  headers?: Record<string, string>;
-  body?: any;
-  signal?: AbortSignal;
-}
-
 export interface Requester {
-  request<T = any>(url: string, config?: UploadRequestInit): Promise<T>;
-
+  get<T = any>(url: string, signal?: AbortSignal): Promise<T>;
+  post<T = any>(
+    url: string,
+    data: any,
+    headers?: Record<string, string>,
+    signal?: AbortSignal
+  ): Promise<T>;
   uploadChunk<T = any>(
     url: string,
     chunk: Blob,
-    config?: UploadRequestInit
+    headers?: Record<string, string>,
+    signal?: AbortSignal
   ): Promise<T>;
 }
 
